@@ -1,0 +1,24 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Test data handling and USB installer
+        run: make check
+      - name: Check address and undefined behaviour
+        run: make check-sanitize
+      - name: Check shell and Python syntax
+        run: |
+          sh -n scripts/build-app.sh scripts/build-network.sh device/launch.sh device/restore-reader.sh
+          python3 -m py_compile scripts/*.py

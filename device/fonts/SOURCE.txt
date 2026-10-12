@@ -1,0 +1,8 @@
+Atkinson Hyperlegible 1.006, copyright Braille Institute of America, Inc.
+Unmodified TrueType files from Google Fonts:
+https://github.com/google/fonts/tree/main/ofl/atkinsonhyperlegible
+Retrieved 2026-10-12. Licensed under SIL OFL 1.1; see OFL.txt.
+
+SHA-256:
+7fb917c89019896d0b52ee84b7cbb3304c18cb90b19a62f5e32712bd23e97669  AtkinsonHyperlegible-Regular.ttf
+5a3b0c8cc8ca545155150b4512a1fa248298df121c50d6557e651e61fbdab92f  AtkinsonHyperlegible-Bold.ttf

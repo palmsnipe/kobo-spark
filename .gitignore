@@ -1,0 +1,12 @@
+/build/
+/dist/
+/third_party/
+/development-state/
+/backups/
+/device/dashboard.conf
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+*.raw
+/rates.csv*
