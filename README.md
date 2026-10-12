@@ -9,12 +9,12 @@ powered by its monitoring API. Kobo Spark is a standalone C client; sparkDash
 continues running on your server.
 
 <p align="center">
-  <img src="docs/screenshots/overview.png" width="380" alt="Kobo dashboard overview showing spark1 and spark2, generation tokens per second, GPU temperature, power and recent power history">
-  <img src="docs/screenshots/history.png" width="380" alt="Spark detail page with selectable throughput, temperature and power charts, plus memory and health information">
-  <img src="docs/screenshots/tokens.png" width="380" alt="Generated output token totals for today in UTC, the approximate past 24 hours, and seven UTC calendar days, with a selectable refresh interval">
+  <img src="docs/screenshots/overview-color.png" width="380" alt="Kobo dashboard overview showing spark1 and spark2, generation tokens per second, GPU temperature, power and recent power history">
+  <img src="docs/screenshots/history-color.png" width="380" alt="Spark detail page with selectable throughput, temperature and power charts, plus memory and health information">
+  <img src="docs/screenshots/tokens-color.png" width="380" alt="Generated output token totals for today in UTC, the approximate past 24 hours, and seven UTC calendar days, with a selectable refresh interval">
 </p>
 
-*Actual framebuffer captures from the working app on a Kobo Libra Colour.*
+*Color overview, GPU power history, and generated-token totals. Actual framebuffer captures from the working app on a Kobo Libra Colour.*
 
 ## What it shows
 
