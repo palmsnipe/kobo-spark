@@ -19,6 +19,8 @@ continues running on your server.
 ## What it shows
 
 - Live generation tokens/sec, GPU temperature, and GPU power.
+- Color accents: blue for throughput, orange for temperature, purple for power,
+  and green/red status indicators, with matching history charts and metric tabs.
 - A two-machine overview and individual pages for up to four machines.
 - Selectable temperature, power, and token-rate charts over a 30-minute window.
 - Model names, GPU/CPU usage, unified memory, system power, and health alerts.
@@ -179,6 +181,8 @@ The reader handoff follows the firmware's boot sequence and was checked against
 The updated build was also checked on the device with saved 1-second refresh,
 server token totals, two successful returns to the home screen, and launch from
 the Wi-Fi reconnecting NickelMenu entry.
+Color rendering uses the Libra Colour's color waveforms for both regular
+updates and full refreshes. Text labels remain black for readability.
 
 ## Credits and licence
 

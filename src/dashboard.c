@@ -92,9 +92,18 @@ static const int intervals[] = {1, 2, 5, 10, 15, 30};
 static int refresh_index = 2;
 static bool redraw, quit, request_refresh, rates_loaded;
 static FBInkConfig paint = {.no_refresh=true, .is_quiet=true, .is_bgless=true};
+typedef struct { uint8_t r, g, b; } Color;
+static const Color BLUE={0,72,160}, ORANGE={172,68,12}, PURPLE={116,38,166};
+static const Color GREEN={20,116,60}, RED={180,30,30};
+static const Color BLUE_TINT={198,218,248}, ORANGE_TINT={250,216,184}, PURPLE_TINT={226,204,246};
+static Color metric_color(int which) { return which==0?BLUE:which==1?ORANGE:PURPLE; }
 static void box(int fd, int x, int y, int w, int h, unsigned char gray) {
     FBInkRect r = {.left=(unsigned short)x, .top=(unsigned short)y, .width=(unsigned short)w, .height=(unsigned short)h};
     if (fbink_fill_rect_gray(fd, &paint, &r, false, gray) < 0) quit = true;
+}
+static void color_box(int fd, int x, int y, int w, int h, Color color) {
+    FBInkRect r={.left=(unsigned short)x,.top=(unsigned short)y,.width=(unsigned short)w,.height=(unsigned short)h};
+    if (fbink_fill_rect_rgba(fd,&paint,&r,false,color.r,color.g,color.b,255)<0) quit=true;
 }
 static void label(int fd, int x, int y, int width, int height, int size, bool bold, const char *text) {
     if (!*text) return;
@@ -103,19 +112,29 @@ static void label(int fd, int x, int y, int width, int height, int size, bool bo
         .size_px=(unsigned short)size};
     if (fbink_print_ot(fd, text, &ot, &paint, NULL) < 0) quit = true;
 }
-static void button(int fd, int x, int y, int width, const char *name, bool selected) {
-    box(fd, x, y, width, 84, selected ? 215 : 245);
-    box(fd, x, y+82, width, 2, 0);
+static void color_label(int fd,int x,int y,int width,int height,int size,bool bold,const char *text,Color color) {
+    /* Do not quantize: FBInk's grayscale palette would discard RGB here. */
+    if (fbink_set_fg_pen_rgba(color.r,color.g,color.b,255,false,false)<0) quit=true;
+    label(fd,x,y,width,height,size,bold,text);
+    if (fbink_set_fg_pen_gray(0,false,false)<0) quit=true;
+}
+static void color_button(int fd,int x,int y,int width,const char *name,bool selected,Color accent,Color tint) {
+    if (selected) color_box(fd,x,y,width,84,tint);
+    else box(fd,x,y,width,84,245);
+    color_box(fd,x,y+78,width,6,accent);
     label(fd, x+18, y+22, width-36, 54, 32, selected, name);
+}
+static void button(int fd,int x,int y,int width,const char *name,bool selected) {
+    color_button(fd,x,y,width,name,selected,BLUE,BLUE_TINT);
 }
 static void fmt(char *buffer, size_t size, double v, const char *unit, int decimals) {
     if (!isfinite(v)) snprintf(buffer, size, "-- %s", unit);
     else snprintf(buffer, size, "%.*f %s", decimals, v, unit);
 }
-static void line(int fd, int x0, int y0, int x1, int y1) {
+static void line(int fd, int x0, int y0, int x1, int y1, Color color) {
     int dx=abs(x1-x0), sx=x0<x1?1:-1, dy=-abs(y1-y0), sy=y0<y1?1:-1, err=dx+dy;
     for (;;) {
-        box(fd, x0, y0, 3, 3, 0);
+        color_box(fd,x0,y0,6,6,color);
         if (x0==x1 && y0==y1) break;
         int e=2*err;
         if (e>=dy) {err+=dy; x0+=sx;}
@@ -230,8 +249,8 @@ static void graph(int fd, const Spark *s, int which, int x, int y, int w, int h,
         int yy=top+height-(int)((values[i]-low)*height/(high-low));
         if (yy<top) yy=top;
         if (yy>top+height) yy=top+height;
-        if (connected && times[i]-prevt<=45000) line(fd,prevx,prevy,xx,yy);
-        else box(fd,xx,yy,5,5,0);
+        if (connected && times[i]-prevt<=45000) line(fd,prevx,prevy,xx,yy,metric_color(which));
+        else color_box(fd,xx,yy,7,7,metric_color(which));
         prevx=xx; prevy=yy; prevt=times[i]; connected=true;
     }
     label(fd,left,y+h-32,width/2,35,mini?22:26,false,"30 min ago");
@@ -242,27 +261,29 @@ static void footer(int fd, bool overview) {
     button(fd,48,1490,268,overview?"History":"Overview",false);
     button(fd,348,1490,268,"Token totals",page==TOTALS_PAGE);
     button(fd,648,1490,268,job.pid?"Updating...":"Refresh",false);
-    button(fd,948,1490,268,"Exit",false);
+    color_button(fd,948,1490,268,"Exit",false,RED,BLUE_TINT);
     label(fd,48,1600,1168,50,25,false,"Page buttons: change Spark   /   Power or hold touch: exit");
 }
 static void card(int fd,const Spark *s,int index) {
     int y=250+index*570;
-    box(fd,48,y,1168,2,0);
+    color_box(fd,48,y,1168,8,index?PURPLE:BLUE);
     label(fd,64,y+20,700,70,48,true,s->name);
     const char *status=!s->fetched?"STALE":s->online?"ONLINE":"OFFLINE";
-    label(fd,995,y+32,210,46,28,true,status);
+    Color state=!s->fetched?ORANGE:s->online?GREEN:RED;
+    color_box(fd,959,y+42,20,20,state);
+    color_label(fd,995,y+32,210,46,28,true,status,state);
     char model[168];
     if (s->worker) snprintf(model,sizeof(model),"Worker for %s  /  %s",s->head,s->model);
     else snprintf(model,sizeof(model),"%s",s->model[0]?s->model:"No model endpoint available");
     label(fd,64,y+95,1130,66,28,false,model);
-    if (s->health[0]) label(fd,64,y+153,1130,40,23,true,s->health);
+    if (s->health[0]) color_label(fd,64,y+153,1130,40,23,true,s->health,ORANGE);
     char value[64];
     if (s->worker) snprintf(value,sizeof(value),"Worker"); else fmt(value,sizeof(value),s->rate,"",1);
-    label(fd,64,y+182,430,108,78,true,value);
+    color_label(fd,64,y+182,430,108,78,true,value,BLUE);
     label(fd,64,y+293,430,44,27,false,s->worker?"Uses head-node throughput":"tokens / sec");
-    fmt(value,sizeof(value),s->temp,"C",0); label(fd,520,y+195,320,85,58,true,value);
+    fmt(value,sizeof(value),s->temp,"C",0); color_label(fd,520,y+195,320,85,58,true,value,ORANGE);
     label(fd,520,y+293,300,44,27,false,"GPU temperature");
-    fmt(value,sizeof(value),s->power,"W",1); label(fd,895,y+195,305,85,58,true,value);
+    fmt(value,sizeof(value),s->power,"W",1); color_label(fd,895,y+195,305,85,58,true,value,PURPLE);
     label(fd,895,y+293,300,44,27,false,"GPU power");
     label(fd,64,y+360,430,40,25,false,"GPU power / last 30 minutes");
     graph(fd,s,2,64,y+394,1116,148,true);
@@ -287,10 +308,11 @@ static void draw(int fd, bool flash) {
             double counts[]={t->today,t->hours24,t->days7};
             for (int i=0;i<3;i++) {
                 int y=270+i*325; char count[64];
-                box(fd,48,y,1168,2,0);
+                Color accent=i==0?BLUE:i==1?GREEN:PURPLE;
+                color_box(fd,48,y,1168,8,accent);
                 label(fd,64,y+28,1130,60,36,true,names[i]);
                 snprintf(count,sizeof(count),i==1?"~ %.0f":"%.0f",counts[i]);
-                label(fd,64,y+110,1130,130,90,true,count);
+                color_label(fd,64,y+110,1130,130,90,true,count,accent);
                 label(fd,64,y+246,1130,45,28,false,"generated output tokens");
             }
             label(fd,64,1270,1130,90,28,false,"All recorded models / server counters continue while the Kobo app is closed. Ledger samples every 15 seconds.");
@@ -308,14 +330,14 @@ static void draw(int fd, bool flash) {
     } else {
         if (page>fleet.count) page=fleet.count;
         Spark *s=&fleet.units[page-1];
-        button(fd,48,222,360,"Tokens / sec",metric==0);
-        button(fd,448,222,366,"GPU temp",metric==1);
-        button(fd,848,222,368,"GPU power",metric==2);
+        color_button(fd,48,222,360,"Tokens / sec",metric==0,BLUE,BLUE_TINT);
+        color_button(fd,448,222,366,"GPU temp",metric==1,ORANGE,ORANGE_TINT);
+        color_button(fd,848,222,368,"GPU power",metric==2,PURPLE,PURPLE_TINT);
         char v[96], note[168];
         double current=metric==0?s->rate:metric==1?s->temp:s->power;
         fmt(v,sizeof(v),current,metric==0?"tok/s":metric==1?"C":"W",metric==1?0:1);
         if (metric==0 && s->worker) snprintf(v,sizeof(v),"Head: %s",s->head);
-        label(fd,64,352,1136,134,90,true,v);
+        color_label(fd,64,352,1136,134,90,true,v,metric_color(metric));
         if (!s->fetched) {
             long age=(long)((dash_wall()-s->updated)/1000);
             snprintf(note,sizeof(note),"Last reading %ld sec ago / refresh to retry",age<0?0:age);
@@ -336,6 +358,9 @@ static void draw(int fd, bool flash) {
     }
     footer(fd,page==0);
     FBInkConfig refresh={.is_quiet=true,.is_flashing=flash};
+    /* The default AUTO/GC16 waveforms render grayscale even with RGB pixels.
+     * Request Kaleido color processing for both clearing and regular updates. */
+    if (view.has_color_panel) refresh.wfm_mode=flash?WFM_GCC16:WFM_GLRC16;
     if (fbink_refresh(fd,0,0,0,0,&refresh)<0 || fbink_wait_for_complete(fd,LAST_MARKER)<0) quit=true;
 }
 static void touch(Input *input,bool active) {
@@ -400,7 +425,7 @@ int main(int argc,char **argv) {
     char base[256]; bool probe=false; int run_seconds=0;
     const char *screenshot=NULL,*config=DASH_DIR "/dashboard.conf";
     for (int i=1;i<argc;i++) {
-        if (!strcmp(argv[i],"--version")) {puts("Kobo Spark 1.1"); return 0;}
+        if (!strcmp(argv[i],"--version")) {puts("Kobo Spark 1.2"); return 0;}
         else if (!strcmp(argv[i],"--probe-dashboard")) probe=true;
         else if (!strcmp(argv[i],"--config") && i+1<argc) config=argv[++i];
         else if (!strcmp(argv[i],"--capture") && i+1<argc) screenshot=argv[++i];
