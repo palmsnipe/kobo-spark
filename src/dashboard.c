@@ -86,7 +86,10 @@ static void capture(int fd, const FBInkState *state, const char *path) {
 static Fleet fleet;
 static RateHistory rates[DASH_UNITS];
 static DashJob job = {.fd=-1};
-static int page, metric, screen_draws;
+static int page, metric;
+#define TOTALS_PAGE (DASH_UNITS + 1)
+static const int intervals[] = {1, 2, 5, 10, 15, 30};
+static int refresh_index = 2;
 static bool redraw, quit, request_refresh, rates_loaded;
 static FBInkConfig paint = {.no_refresh=true, .is_quiet=true, .is_bgless=true};
 static void box(int fd, int x, int y, int w, int h, unsigned char gray) {
@@ -166,6 +169,24 @@ static void load_rates(void) {
     }
     fclose(f);
 }
+static void load_interval(void) {
+    FILE *f = fopen(DASH_DIR "/refresh-seconds", "r");
+    int seconds;
+    if (f) {
+        if (fscanf(f, "%d", &seconds) == 1)
+            for (unsigned i=0; i<sizeof(intervals)/sizeof(intervals[0]); i++)
+                if (intervals[i] == seconds) refresh_index = (int)i;
+        fclose(f);
+    }
+}
+static void save_interval(void) {
+    FILE *f = fopen(DASH_DIR "/refresh-seconds.tmp", "w");
+    if (f) {
+        bool good = fprintf(f, "%d\n", intervals[refresh_index]) > 0;
+        if (fclose(f)) good = false;
+        if (good) rename(DASH_DIR "/refresh-seconds.tmp", DASH_DIR "/refresh-seconds");
+    }
+}
 static void graph(int fd, const Spark *s, int which, int x, int y, int w, int h, bool mini) {
     int64_t times[DASH_POINTS]; double values[DASH_POINTS]; int count=0;
     const char *unit=which==0?"tok/s":which==1?"C":"W";
@@ -218,9 +239,10 @@ static void graph(int fd, const Spark *s, int which, int x, int y, int w, int h,
     if (!mini) label(fd,x,y-7,78,38,24,false,unit);
 }
 static void footer(int fd, bool overview) {
-    button(fd,48,1490,366,overview?"History":"Overview",false);
-    button(fd,448,1490,366,job.pid?"Refreshing...":"Refresh",false);
-    button(fd,848,1490,368,"Exit",false);
+    button(fd,48,1490,268,overview?"History":"Overview",false);
+    button(fd,348,1490,268,"Token totals",page==TOTALS_PAGE);
+    button(fd,648,1490,268,job.pid?"Updating...":"Refresh",false);
+    button(fd,948,1490,268,"Exit",false);
     label(fd,48,1600,1168,50,25,false,"Page buttons: change Spark   /   Power or hold touch: exit");
 }
 static void card(int fd,const Spark *s,int index) {
@@ -247,13 +269,37 @@ static void card(int fd,const Spark *s,int index) {
 }
 static void draw(int fd, bool flash) {
     if (fbink_cls(fd,&paint,NULL,false)<0) {quit=true; return;}
-    label(fd,48,40,1080,94,58,true,page && page<=fleet.count?fleet.units[page-1].name:"Spark dashboard");
+    label(fd,48,40,1080,94,58,true,page==TOTALS_PAGE?"Generated tokens":page && page<=fleet.count?fleet.units[page-1].name:"Spark dashboard");
     char status[160];
     time_t now=time(NULL); struct tm tm; localtime_r(&now,&tm);
     if (fleet.error[0]) snprintf(status,sizeof(status),"%.112s",fleet.error);
-    else snprintf(status,sizeof(status),"%02d:%02d:%02d  /  %s  /  refresh every 15 sec",tm.tm_hour,tm.tm_min,tm.tm_sec,job.pid?"updating":"live");
-    label(fd,48,139,1168,70,28,false,status);
-    if (!fleet.count) {
+    else snprintf(status,sizeof(status),"%02d:%02d:%02d  /  %s",tm.tm_hour,tm.tm_min,tm.tm_sec,job.pid?"updating":"live");
+    label(fd,48,139,830,70,28,false,status);
+    char speed[48]; snprintf(speed,sizeof(speed),"Interval: %d s",intervals[refresh_index]);
+    button(fd,924,126,292,speed,false);
+    if (page==TOTALS_PAGE) {
+        TokenTotals *t=&fleet.tokens;
+        if (!t->fetched) {
+            label(fd,64,320,1130,110,46,true,"Token totals unavailable");
+            label(fd,64,470,1130,170,30,false,t->error[0]?t->error:"This sparkDash server needs the token-history endpoint.");
+        } else {
+            const char *names[]={"Today / since 00:00 UTC", "Past 24 hours / approximate", "7 days / today + 6 UTC dates"};
+            double counts[]={t->today,t->hours24,t->days7};
+            for (int i=0;i<3;i++) {
+                int y=270+i*325; char count[64];
+                box(fd,48,y,1168,2,0);
+                label(fd,64,y+28,1130,60,36,true,names[i]);
+                snprintf(count,sizeof(count),i==1?"~ %.0f":"%.0f",counts[i]);
+                label(fd,64,y+110,1130,130,90,true,count);
+                label(fd,64,y+246,1130,45,28,false,"generated output tokens");
+            }
+            label(fd,64,1270,1130,90,28,false,"All recorded models / server counters continue while the Kobo app is closed. Ledger samples every 15 seconds.");
+            long age=(long)((dash_wall()-t->updated)/1000);
+            snprintf(status,sizeof(status),"Ledger age: %ld s%s",age<0?0:age,
+                t->partial_day || t->partial_hours?" / history may cover only part of the window":"");
+            label(fd,64,1378,1130,82,26,true,t->error[0]?t->error:status);
+        }
+    } else if (!fleet.count) {
         label(fd,64,360,1100,140,46,true,job.pid?"Connecting to sparkDash...":"Dashboard unavailable");
         label(fd,64,540,1100,200,34,false,"Enable Wi-Fi before opening the dashboard. Refresh to retry. The dashboard connects to your sparkDash service.");
     } else if (!page) {
@@ -291,7 +337,6 @@ static void draw(int fd, bool flash) {
     footer(fd,page==0);
     FBInkConfig refresh={.is_quiet=true,.is_flashing=flash};
     if (fbink_refresh(fd,0,0,0,0,&refresh)<0 || fbink_wait_for_complete(fd,LAST_MARKER)<0) quit=true;
-    screen_draws++;
 }
 static void touch(Input *input,bool active) {
     if (active==input->active) return;
@@ -310,14 +355,18 @@ static void touch(Input *input,bool active) {
     if (view.rotation_map[view.current_rota]==2) {x=width-1-x; y=height-1-y;}
     printf("dashboard tap: %d,%d\n",x,y);
     if (x<48 || x>=1216) return;
-    if (y>=1490 && y<=1574) {
-        if (x<414) page=page?0:fleet.count?1:0;
-        else if (x>=848) quit=true;
-        else if (x>=448) request_refresh=true;
+    if (y>=126 && y<=210 && x>=924) {
+        refresh_index=(refresh_index+1)%(int)(sizeof(intervals)/sizeof(intervals[0]));
+        save_interval(); request_refresh=true;
+    } else if (y>=1490 && y<=1574) {
+        if (x<316) page=page?0:fleet.count?1:0;
+        else if (x>=948) quit=true;
+        else if (x>=648 && x<916) request_refresh=true;
+        else if (x>=348 && x<616) page=TOTALS_PAGE;
     } else if (!page && y>=250 && y<1390) {
         int index=(y-250)/570;
         if (index<fleet.count) {page=index+1; metric=0;}
-    } else if (page && y>=222 && y<=306) metric=x<414?0:x<814?1:2;
+    } else if (page && page!=TOTALS_PAGE && y>=222 && y<=306) metric=x<414?0:x<814?1:2;
     else return;
     redraw=true;
 }
@@ -351,11 +400,11 @@ int main(int argc,char **argv) {
     char base[256]; bool probe=false; int run_seconds=0;
     const char *screenshot=NULL,*config=DASH_DIR "/dashboard.conf";
     for (int i=1;i<argc;i++) {
-        if (!strcmp(argv[i],"--version")) {puts("Kobo Spark 1.0"); return 0;}
+        if (!strcmp(argv[i],"--version")) {puts("Kobo Spark 1.1"); return 0;}
         else if (!strcmp(argv[i],"--probe-dashboard")) probe=true;
         else if (!strcmp(argv[i],"--config") && i+1<argc) config=argv[++i];
         else if (!strcmp(argv[i],"--capture") && i+1<argc) screenshot=argv[++i];
-        else if (!strcmp(argv[i],"--page") && i+1<argc) {page=atoi(argv[++i]); if(page<0 || page>DASH_UNITS) return 2;}
+        else if (!strcmp(argv[i],"--page") && i+1<argc) {page=atoi(argv[++i]); if(page<0 || page>TOTALS_PAGE) return 2;}
         else if (!strcmp(argv[i],"--metric") && i+1<argc) {metric=atoi(argv[++i]); if(metric<0 || metric>2) return 2;}
         else if (!strcmp(argv[i],"--run-seconds") && i+1<argc) {run_seconds=atoi(argv[++i]); if(run_seconds<1 || run_seconds>3600) return 2;}
         else {fprintf(stderr,"Unknown argument: %s\n",argv[i]); return 2;}
@@ -369,13 +418,15 @@ int main(int argc,char **argv) {
                 s->name,s->fetched,s->online,s->role,s->model,s->rate,s->temp,s->power,s->points);
         }
         if (fleet.error[0]) printf("error: %s\n",fleet.error);
+        if (fleet.tokens.fetched) printf("Output tokens: today(UTC)=%.0f past24h~=%.0f 7UTCdays=%.0f\n",fleet.tokens.today,fleet.tokens.hours24,fleet.tokens.days7);
+        else printf("Token totals: %s\n",fleet.tokens.error);
         return fleet.count && !fleet.error[0]?0:1;
     }
     setvbuf(stdout,NULL,_IOLBF,0);
     signal(SIGINT,on_signal); signal(SIGTERM,on_signal); signal(SIGHUP,on_signal);
     int fd=fbink_open(),count=0,result=1;
     if (fd<0) return 1;
-    FBInkDump original={0}; Input inputs[MAX_INPUTS]={{0}}; struct pollfd pfds[MAX_INPUTS]={{0}};
+    Input inputs[MAX_INPUTS]={{0}}; struct pollfd pfds[MAX_INPUTS]={{0}};
     if (fbink_init(fd,&paint)<0) goto cleanup;
     fbink_get_state(&paint,&view);
     if (view.device_id!=390 || view.view_width!=1264 || view.view_height!=1680) {fputs("Launch in portrait on Libra Colour\n",stderr); goto cleanup;}
@@ -386,13 +437,13 @@ int main(int argc,char **argv) {
     snprintf(path,sizeof(path),"%sAtkinsonHyperlegible-Bold.ttf",fontdir);
     if (fbink_add_ot_font(path,FNT_BOLD)<0) goto cleanup;
     count=find_inputs(inputs,true);
-    if (!count || fbink_dump(fd,&original)<0) goto cleanup;
+    if (!count) goto cleanup;
     for (int i=0;i<count;i++) pfds[i]=(struct pollfd){.fd=inputs[i].fd,.events=POLLIN};
-    load_rates(); rates_loaded=true; wake(true); heartbeat();
+    load_interval(); load_rates(); rates_loaded=true; wake(true); heartbeat();
     if (dash_start(&job,base)<0) snprintf(fleet.error,sizeof(fleet.error),"Cannot start dashboard request");
     draw(fd,true);
     if (screenshot) capture(fd,&view,screenshot);
-    int64_t start=milliseconds(),next=start+15000,lastbeat=start,lastwake=start,lastsave=start;
+    int64_t start=milliseconds(),next=start+intervals[refresh_index]*1000,lastbeat=start,lastwake=start,lastsave=start,lastslow=start,lastflash=start;
     while (!quit && !interrupted && (!run_seconds || milliseconds()-start<run_seconds*1000LL)) {
         int64_t now=milliseconds();
         if (now-lastbeat>=1000) {heartbeat(); lastbeat=now;}
@@ -409,34 +460,36 @@ int main(int argc,char **argv) {
             }
             if (bytes<0 && errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR) goto cleanup;
         }
+        if (quit || interrupted) break;
         bool done=dash_poll(&job);
         if (done) {
             dash_merge(&fleet,&job.result); sample_rates(); redraw=true;
-            next=milliseconds()+15000;
             printf("dashboard update: units=%d error=%s\n",fleet.count,fleet.error);
         }
         /* Only a refresh-button tap should request early polling. Page changes
          * also redraw, but should not flood the server. */
         if (!job.pid && (request_refresh || now>=next)) {
-            if (dash_start(&job,base)<0) snprintf(fleet.error,sizeof(fleet.error),"Cannot start dashboard request");
-            next=now+15000; redraw=true;
+            bool slow=request_refresh || now-lastslow>=15000;
+            if (dash_start_mode(&job,base,slow)<0) snprintf(fleet.error,sizeof(fleet.error),"Cannot start dashboard request");
+            else if (slow) lastslow=now;
+            next=now+intervals[refresh_index]*1000;
+            request_refresh=false;
         }
-        request_refresh=false;
         if (now-lastsave>=60000) {save_rates(); lastsave=now;}
         if (redraw && !quit) {
-            draw(fd,screen_draws%20==0); redraw=false;
+            bool flash=now-lastflash>=300000;
+            draw(fd,flash); if (flash) lastflash=now; redraw=false;
             if (screenshot) capture(fd,&view,screenshot);
         }
     }
     result=0;
 cleanup:
-    dash_cancel(&job); if (rates_loaded) save_rates(); wake(false);
-    if (original.data) {
-        FBInkConfig restore={.is_flashing=true,.is_quiet=true};
-        if (fbink_restore(fd,&restore,&original)<0) result=1;
-        (void)fbink_wait_for_complete(fd,LAST_MARKER); (void)fbink_free_dump_data(&original);
-    }
+    /* Release input before any disk/network cleanup. Nickel redraws its own UI;
+     * waiting for a flashing restore here could hang while input stayed grabbed. */
     for (int i=0;i<count;i++) {(void)ioctl(inputs[i].fd,EVIOCGRAB,0); close(inputs[i].fd);}
+    dash_cancel(&job); if (rates_loaded) save_rates();
+    /* The launcher keeps the wake lease through reader recovery. */
+    if (access("/tmp/kobo-spark.lock/active",F_OK)<0) wake(false);
     (void)fbink_free_ot_fonts(); (void)fbink_close(fd);
     puts("dashboard exited; returning to reader"); return result;
 }

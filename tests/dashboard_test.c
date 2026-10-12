@@ -47,6 +47,32 @@ int main(int argc,char **argv) {
     assert(!s->online && s->fetched && isnan(s->rate) && !strcmp(s->health,"Disconnected"));
     assert(!dash_parse_metrics("{\"id\":\"a\",\"online\":true,\"metrics\":{\"llm\":[{\"available\":true,\"generationTps\":null}]}}",s));
     assert(s->llm && isnan(s->rate));
+    /* 12:30 UTC: the oldest hour overlaps the 24-hour window by one half.
+     * Sum multiple models/ports, exclude prompt tokens and old buckets. */
+    TokenTotals totals={0};
+    const char *tokens="{\"generatedAt\":1791808200000,\"firstDay\":\"2026-10-01\",\"firstHour\":\"2026-10-10T00\","
+        "\"day\":[{\"t\":\"2026-10-12\",\"completionTokens\":100,\"promptTokens\":999999},"
+        "{\"t\":\"2026-10-12\",\"completionTokens\":50},{\"t\":\"2026-10-11\",\"completionTokens\":200},"
+        "{\"t\":\"2026-10-06\",\"completionTokens\":300},{\"t\":\"2026-10-05\",\"completionTokens\":900}],"
+        "\"hour\":[{\"t\":\"2026-10-11T12\",\"completionTokens\":80},{\"t\":\"2026-10-11T13\",\"completionTokens\":20},"
+        "{\"t\":\"2026-10-12T12\",\"completionTokens\":40},{\"t\":\"2026-10-11T11\",\"completionTokens\":500}]}";
+    assert(!dash_parse_tokens(tokens,&totals));
+    assert(totals.fetched && totals.today==150 && totals.days7==650 && totals.hours24==100);
+    assert(!totals.partial_day && !totals.partial_hours);
+    TokenTotals saved=totals;
+    assert(dash_parse_tokens("{\"generatedAt\":1791808200000,\"day\":[{\"t\":\"2026-02-31\",\"completionTokens\":1}],\"hour\":[]}",&totals)<0);
+    assert(totals.today==saved.today);
+    assert(dash_parse_tokens("{\"generatedAt\":1791808200000,\"day\":[],\"hour\":[{\"t\":\"2026-10-12T12\",\"completionTokens\":-2}]}",&totals)<0);
+    assert(dash_parse_tokens("{\"generatedAt\":1791808200000,\"day\":[],\"hour\":[{\"t\":\"2026-10-12T12\",\"completionTokens\":null}]}",&totals)<0);
+    assert(dash_parse_tokens("{\"generatedAt\":1791808200000,\"day\":[],\"hour\":[{\"t\":\"2026-10-13T12\",\"completionTokens\":1}]}",&totals)<0);
+    assert(dash_parse_tokens("{}",&totals)<0);
+    assert(!dash_parse_tokens("{\"generatedAt\":1791808200000,\"day\":[],\"hour\":[],\"firstDay\":null,\"firstHour\":null}",&totals));
+    assert(totals.today==0 && totals.days7==0 && totals.hours24==0 && totals.partial_hours);
+    old.tokens=saved;
+    Fleet fast=old; memset(&fast.tokens,0,sizeof(fast.tokens));
+    dash_merge(&old,&fast); assert(old.tokens.fetched && old.tokens.today==150);
+    snprintf(fast.tokens.error,sizeof(fast.tokens.error),"HTTP 404");
+    dash_merge(&old,&fast); assert(old.tokens.today==150 && old.tokens.error[0]);
     if (argc==2) {
         const char *names[]={"sparks.json","metrics-0.json","metrics-1.json","history-spark1.json","history-spark2.json"};
         for (int i=0;i<5;i++) {
@@ -63,6 +89,14 @@ int main(int argc,char **argv) {
         while (!dash_poll(&job) && dash_monotonic()-start<26000) {struct timespec t={.tv_nsec=10000000}; nanosleep(&t,NULL);}
         assert(!job.pid && job.fd==-1 && job.result.count>0 && !job.result.error[0]);
         for (int i=0;i<job.result.count;i++) assert(job.result.units[i].fetched && job.result.units[i].history_ok);
+        assert(job.result.tokens.fetched || job.result.tokens.error[0]);
+        Fleet full=job.result;
+        assert(!dash_start_mode(&job,argv[2],false));
+        start=dash_monotonic();
+        while (!dash_poll(&job) && dash_monotonic()-start<26000) {struct timespec t={.tv_nsec=10000000}; nanosleep(&t,NULL);}
+        assert(!job.pid && !job.result.units[0].history_ok && !job.result.tokens.fetched);
+        dash_merge(&full,&job.result);
+        assert(full.units[0].points>0 && full.tokens.fetched);
         assert(!dash_start(&job,argv[2])); dash_cancel(&job); assert(!job.pid && job.fd==-1);
         puts("Live API worker: complete pipe transfer, duplicate prevention and cancellation passed");
     }

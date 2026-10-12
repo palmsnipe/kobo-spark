@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE
 #include "dashboard_data.h"
 #include <curl/curl.h>
 #include <ctype.h>
@@ -260,6 +260,58 @@ int dash_parse_history(const char *json, Spark *s) {
 }
 int64_t dash_monotonic(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
 int64_t dash_wall(void) { struct timespec t; clock_gettime(CLOCK_REALTIME, &t); return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
+/* The server retains UTC calendar days and hourly counters, not individual
+ * token timestamps. Only the boundary hour of the rolling window is estimated. */
+static int64_t bucket_time(const char *key, bool hour) {
+    if (strlen(key) != (hour ? 13U : 10U)) return -1;
+    struct tm tm = {0};
+    char *end = strptime(key, hour ? "%Y-%m-%dT%H" : "%Y-%m-%d", &tm);
+    if (!end || *end || tm.tm_year < 100 || tm.tm_year > 199) return -1;
+    time_t t = timegm(&tm);
+    struct tm check; char normalized[24];
+    gmtime_r(&t, &check);
+    strftime(normalized, sizeof(normalized), hour ? "%Y-%m-%dT%H" : "%Y-%m-%d", &check);
+    return strcmp(key, normalized) ? -1 : (int64_t)t * 1000;
+}
+int dash_parse_tokens(const char *json, TokenTotals *totals) {
+    Json j;
+    if (parse(&j, json) < 0) return -1;
+    TokenTotals next = {0};
+    double generated = num(&j, 0, "generatedAt");
+    int days = field(&j, 0, "day"), hours = field(&j, 0, "hour");
+    if (!isfinite(generated) || generated < 946684800000.0 || generated >= 4102444800000.0 ||
+        days < 0 || hours < 0 || j.tokens[days].type != '[' || j.tokens[hours].type != '[') goto invalid;
+    next.updated = (int64_t)generated;
+    int64_t midnight = next.updated / 86400000 * 86400000;
+    int64_t since = next.updated - 86400000;
+    for (int which = 0; which < 2; which++) {
+        int list = which ? hours : days;
+        for (int i = list + 1; i < j.tokens[list].end; i = j.tokens[i].end) {
+            char key[24]; str(&j, i, "t", key, sizeof(key));
+            int64_t t = bucket_time(key, which != 0);
+            double count = num(&j, i, "completionTokens");
+            if (t < 0 || t > next.updated || !isfinite(count) || count < 0 || floor(count) != count) goto invalid;
+            if (!which) {
+                if (t == midnight) next.today += count;
+                if (t >= midnight - 6 * 86400000LL) next.days7 += count;
+            } else if (t + 3600000 > since) {
+                double weight = t < since ? (double)(t + 3600000 - since) / 3600000.0 : 1.0;
+                next.hours24 += count * weight;
+            }
+            if (next.today >= 1e15 || next.days7 >= 1e15 || next.hours24 >= 1e15) goto invalid;
+        }
+    }
+    char first[24]; str(&j, 0, "firstDay", first, sizeof(first));
+    int64_t first_day = bucket_time(first, false);
+    str(&j, 0, "firstHour", first, sizeof(first));
+    int64_t first_hour = bucket_time(first, true);
+    next.partial_day = first_day < 0 || first_day > midnight - 6 * 86400000LL;
+    next.partial_hours = first_hour < 0 || first_hour > since / 3600000 * 3600000;
+    next.fetched = true; *totals = next;
+    free(j.tokens); return 0;
+invalid:
+    free(j.tokens); return -1;
+}
 typedef struct { char *body; size_t bytes; } Body;
 static size_t receive(char *ptr, size_t size, size_t nmemb, void *userdata) {
     Body *b = userdata;
@@ -304,7 +356,7 @@ int dash_config(const char *path, char *base, size_t size) {
     if (!valid_base(line) || len >= size) return -1;
     memcpy(base, line, len + 1); return 0;
 }
-void dash_fetch(Fleet *fleet, const char *base) {
+static void fetch_mode(Fleet *fleet, const char *base, bool history) {
     memset(fleet, 0, sizeof(*fleet));
     if (!valid_base(base)) { snprintf(fleet->error, sizeof(fleet->error), "Invalid dashboard address"); return; }
     CURL *curl = NULL; char *body = NULL;
@@ -332,7 +384,7 @@ void dash_fetch(Fleet *fleet, const char *base) {
         if (get(curl, url, body, deadline, error, sizeof(error)) == 0) {
             if (dash_parse_metrics(body, s) < 0) snprintf(error, sizeof(error), "Invalid metrics for %.60s", s->name);
         }
-        if (s->fetched) {
+        if (s->fetched && history) {
             snprintf(url, sizeof(url), "%s/api/sparks/%s/gpu-history?windowMs=1800000", base, id);
             if (get(curl, url, body, deadline, error, sizeof(error)) == 0 && dash_parse_history(body, s) < 0)
                 snprintf(error, sizeof(error), "Invalid history for %.60s", s->name);
@@ -340,9 +392,17 @@ void dash_fetch(Fleet *fleet, const char *base) {
         if (error[0]) snprintf(fleet->error, sizeof(fleet->error), "%s", error);
         error[0] = 0; curl_free(id);
     }
+    if (history) {
+        snprintf(url, sizeof(url), "%s/api/llm-token-totals/history", base);
+        if (get(curl, url, body, deadline, error, sizeof(error)) < 0)
+            snprintf(fleet->tokens.error, sizeof(fleet->tokens.error), "Token history: %.70s", error);
+        else if (dash_parse_tokens(body, &fleet->tokens) < 0)
+            snprintf(fleet->tokens.error, sizeof(fleet->tokens.error), "Invalid token history from server");
+    }
 cleanup:
     free(body); if (curl) curl_easy_cleanup(curl); curl_global_cleanup();
 }
+void dash_fetch(Fleet *fleet, const char *base) { fetch_mode(fleet, base, true); }
 void dash_cancel(DashJob *job) {
     if (job->pid > 0) {
         kill(job->pid, SIGKILL);
@@ -351,7 +411,7 @@ void dash_cancel(DashJob *job) {
     if (job->fd >= 0) close(job->fd);
     job->pid = 0; job->fd = -1;
 }
-int dash_start(DashJob *job, const char *base) {
+int dash_start_mode(DashJob *job, const char *base, bool history) {
     if (job->pid > 0) return -1;
     int p[2]; if (pipe(p) < 0) return -1;
     pid_t pid = fork();
@@ -361,7 +421,7 @@ int dash_start(DashJob *job, const char *base) {
         close(p[0]);
         long maxfd = sysconf(_SC_OPEN_MAX);
         for (int fd = 3; fd < maxfd; fd++) if (fd != p[1]) close(fd);
-        Fleet fleet; dash_fetch(&fleet, base);
+        Fleet fleet; fetch_mode(&fleet, base, history);
         size_t sent = 0;
         while (sent < sizeof(fleet)) {
             ssize_t n = write(p[1], (char *)&fleet + sent, sizeof(fleet) - sent);
@@ -375,6 +435,7 @@ int dash_start(DashJob *job, const char *base) {
     job->fd = p[0]; job->pid = pid; job->started = dash_monotonic(); job->received = 0;
     memset(&job->result, 0, sizeof(job->result)); return 0;
 }
+int dash_start(DashJob *job, const char *base) { return dash_start_mode(job, base, true); }
 bool dash_poll(DashJob *job) {
     if (job->pid <= 0) return false;
     while (job->received < sizeof(job->result)) {
@@ -396,6 +457,10 @@ bool dash_poll(DashJob *job) {
 }
 void dash_merge(Fleet *current, const Fleet *incoming) {
     Fleet next = *incoming;
+    if (!incoming->tokens.fetched) {
+        next.tokens = current->tokens;
+        if (incoming->tokens.error[0]) snprintf(next.tokens.error, sizeof(next.tokens.error), "%s", incoming->tokens.error);
+    }
     if (!incoming->count) {
         snprintf(current->error, sizeof(current->error), "%s", incoming->error);
         for (int i = 0; i < current->count; i++) current->units[i].fetched = false;
@@ -419,7 +484,7 @@ void dash_sample(RateHistory *history, const Spark *s, int64_t now) {
     while (history->count && history->points[0].t < now - DASH_WINDOW_MS) {
         memmove(history->points, history->points + 1, (size_t)(--history->count) * sizeof(RatePoint));
     }
-    if (history->count && now - history->points[history->count - 1].t < 12000) return;
+    if (history->count && now - history->points[history->count - 1].t < 15000) return;
     if (history->count == DASH_POINTS) { memmove(history->points, history->points + 1, (DASH_POINTS - 1) * sizeof(RatePoint)); history->count--; }
     history->points[history->count++] = (RatePoint){.t=now, .rate=s->fetched && s->online && s->llm ? s->rate : NAN};
 }

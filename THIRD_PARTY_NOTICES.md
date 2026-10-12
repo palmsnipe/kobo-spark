@@ -6,6 +6,7 @@ Kobo Spark's original source, scripts, and documentation are licensed under GPL-
 | Component | Source | Licence | Use |
 | --- | --- | --- | --- |
 | FBInk | [NiLuJe/FBInk](https://github.com/NiLuJe/FBInk) | GPL-3.0-or-later | E-ink rendering and Kobo device information |
+| qimagescale (inside FBInk) | Qt Company / Daniel M. Duley / Carsten Haitzler and contributors | LGPL-3.0 or stated GPL option, with BSD-style notices | FBInk image/capture support; GPL-3.0 option used |
 | libcurl | [curl.se](https://curl.se/docs/copyright.html) | curl licence (MIT-style) | HTTP/HTTPS client |
 | Mbed TLS | [Mbed-TLS/mbedtls](https://github.com/Mbed-TLS/mbedtls) | Apache-2.0 or GPL-2.0-or-later; Apache-2.0 option used | TLS for libcurl |
 | Atkinson Hyperlegible | [Google Fonts / Braille Institute](https://github.com/google/fonts/tree/main/ofl/atkinsonhyperlegible) | SIL Open Font License 1.1 | Bundled regular and bold fonts |
@@ -18,6 +19,10 @@ dependency licences and FBInk's credits are copied into the bundle. When distrib
 provide its corresponding source and build scripts, including the pinned FBInk
 and networking dependencies. `make source-bundle` packages these after a build.
 FBInk's own headers and credits describe its additional third-party components.
+The image-enabled build includes qimagescale; its source headers, copyright
+notices (including Qt Company and Intel), and original image-transform licence
+are included in the compiled bundle. Thanks to Daniel M. Duley, Carsten Haitzler,
+and the Imlib2 contributors for the image-scaling implementation.
 
 The font licence and provenance are checked in under `device/fonts/`. The Mozilla
 MPL text is in `LICENSES/MPL-2.0.txt`. Compiler and library versions, source hashes,

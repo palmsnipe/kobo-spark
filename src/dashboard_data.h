@@ -21,7 +21,13 @@ typedef struct {
     int points;
     GpuPoint history[DASH_POINTS];
 } Spark;
-typedef struct { int count; Spark units[DASH_UNITS]; char error[128]; } Fleet;
+typedef struct {
+    bool fetched, partial_day, partial_hours;
+    int64_t updated;
+    double today, hours24, days7;
+    char error[96];
+} TokenTotals;
+typedef struct { int count; Spark units[DASH_UNITS]; char error[128]; TokenTotals tokens; } Fleet;
 typedef struct {
     int fd;
     pid_t pid;
@@ -33,8 +39,10 @@ typedef struct { char id[64]; int count; RatePoint points[DASH_POINTS]; } RateHi
 int dash_parse_sparks(const char *json, Fleet *fleet);
 int dash_parse_metrics(const char *json, Spark *spark);
 int dash_parse_history(const char *json, Spark *spark);
+int dash_parse_tokens(const char *json, TokenTotals *totals);
 void dash_fetch(Fleet *fleet, const char *base);
 int dash_start(DashJob *job, const char *base);
+int dash_start_mode(DashJob *job, const char *base, bool history);
 bool dash_poll(DashJob *job);
 void dash_cancel(DashJob *job);
 void dash_merge(Fleet *current, const Fleet *incoming);

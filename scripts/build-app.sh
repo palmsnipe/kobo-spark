@@ -25,13 +25,13 @@ docker run --rm --platform=linux/amd64 --network=none \
     prefix=arm-nickel-linux-gnueabihf
     flags="-O2 -std=gnu11 -march=armv7-a -mfpu=neon -mfloat-abi=hard -mthumb"
     sh scripts/build-network.sh
-    if [ ! -f build/fbink-opentype.ready ]; then make -C third_party/FBInk clean; fi
+    if [ ! -f build/fbink-opentype-image.ready ]; then make -C third_party/FBInk clean; fi
     # NickelTC uses GCC 4.9; override FBInk flags requiring a newer compiler.
     make -C third_party/FBInk -j4 CROSS_TC="$prefix" \
         FBINK_VERSION="$(printf %.7s "$FBINK_COMMIT")" \
         EXTRA_CFLAGS="-std=gnu11 -fno-common -Wno-pragmas" \
-        CFLAGS="$flags" MINIMAL=1 OPENTYPE=1 LIBS=-lm staticlib
-    touch build/fbink-opentype.ready
+        CFLAGS="$flags" MINIMAL=1 OPENTYPE=1 IMAGE=1 LIBS=-lm staticlib
+    touch build/fbink-opentype-image.ready
     "$prefix-gcc" $flags -Wall -Wextra -Werror -Isrc -Ithird_party/FBInk -Ibuild/network/prefix/include \
         src/dashboard.c src/dashboard_data.c third_party/FBInk/Release/libfbink.a \
         build/network/prefix/lib/libcurl.a build/network/prefix/lib/libmbedtls.a \
@@ -56,6 +56,9 @@ cp third_party/FBInk/LICENSE dist/kobo-spark/licenses/fbink.txt
 cp third_party/FBInk/CREDITS dist/kobo-spark/licenses/fbink-credits.txt
 cp third_party/FBInk/libunibreak/LICENCE dist/kobo-spark/licenses/libunibreak.txt
 cp third_party/FBInk/stb/LICENSE dist/kobo-spark/licenses/stb.txt
+cp third_party/FBInk/qimagescale/QIMAGETRANSFORM_LICENSE.txt dist/kobo-spark/licenses/qimagescale.txt
+mkdir -p dist/kobo-spark/source/qimagescale
+cp third_party/FBInk/qimagescale/*.c third_party/FBInk/qimagescale/*.h dist/kobo-spark/source/qimagescale/
 cp third_party/FBInk/i2c-tools/COPYING.LGPL dist/kobo-spark/licenses/libi2c.txt
 cp LICENSES/MPL-2.0.txt dist/kobo-spark/licenses/mozilla-ca-MPL-2.0.txt
 cp src/dashboard.c src/dashboard_data.c src/dashboard_data.h toolchain.env dist/kobo-spark/source/
